@@ -1,0 +1,319 @@
+```html
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Control de Turnos</title>
+    
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#4f46e5">
+    
+    <link rel="manifest" href="data:application/manifest+json;base64,ewogICJuYW1lIjogIkNvbnRyb2wgZGUgVHVybm9zIiwKICCAic2hvcnRfbmFtZSI6ICJUdXJub3MiLAogICJkaXNwbGF5IjogInN0YW5kYWxvbmUiLAogICJiYWNrZ3JvdW5kX2NvbG9yIjogIiNmOGZhZmMiLAogICJ0aGVtZV9jb2xvciI6ICIjNGY0NmU1IiwKICAiaWNvbnMiOiBbeyJzcmMiOiAiZGF0YTppbWFnZS9zdmcreG1sO3V0ZjgsJTBBPHN2ZyB4bWxucz0naHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmcnIHZpZXdCb3g9JzAgMCAyNCAyNCcgZmlsbD0nJTIzNGY0NmU1Jz48cmVjdCB3aWR0aD0nMjQnIGhlaWdodD0nMjQnIHJ4PSc0JyByeT0nNCcvPjwvc3ZnPiIsICJzaXplcyI6ICI1MTJ4NTEyIiwgInR5cGUiOiAiaW1hZ2Uvc3ZnK3htbCIsICJwdXJwb3NlIjogImFueSBtYXNrYWJsZSJ9XQp9">
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        body { -webkit-tap-highlight-color: transparent; }
+        .pb-safe { padding-bottom: env(safe-area-inset-bottom, 20px); }
+    </style>
+
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function() {
+          const swCode = `
+            self.addEventListener('install', (e) => self.skipWaiting());
+            self.addEventListener('activate', (e) => self.clients.claim());
+            self.addEventListener('fetch', (e) => {});
+          `;
+          const blob = new Blob([swCode], {type: 'application/javascript'});
+          const url = URL.createObjectURL(blob);
+          navigator.serviceWorker.register(url).catch(console.error);
+        });
+      }
+    </script>
+</head>
+<body class="bg-slate-50 font-sans text-slate-800">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+
+        const VALORES_POR_DEFECTO = {
+          BASE: 52500, BONO_SABADO: 5000, BONO_DOMINGO: 15000,
+          BONO_FERIADO: 15000, BONO_DOBLE_TURNO: 20000, BONO_LLUVIA: 20000,
+        };
+
+        const formatearDinero = (monto) => new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP', maximumFractionDigits: 0 }).format(monto || 0);
+        const obtenerFechaHoy = () => new Date().toISOString().split('T')[0];
+
+        // --- HOOK MEMORIA LOCAL ---
+        function useLocalStorage(key, initialValue) {
+          const [storedValue, setStoredValue] = useState(() => {
+            try {
+              const item = window.localStorage.getItem(key);
+              return item ? JSON.parse(item) : initialValue;
+            } catch (error) { return initialValue; }
+          });
+
+          const setValue = (value) => {
+            try {
+              const valueToStore = value instanceof Function ? value(storedValue) : value;
+              setStoredValue(valueToStore);
+              window.localStorage.setItem(key, JSON.stringify(valueToStore));
+            } catch (error) { console.error(error); }
+          };
+          return [storedValue, setValue];
+        }
+
+        function App() {
+          const [pestanaActiva, setPestanaActiva] = useState('registro');
+          const [notificacion, setNotificacion] = useState(null);
+          
+          const [valoresActuales, setValoresActuales] = useLocalStorage('tarifas_turnos', VALORES_POR_DEFECTO);
+          const [jornadas, setJornadas] = useLocalStorage('jornadas_guardadas', []);
+
+          // Estados Formularios
+          const [fecha, setFecha] = useState(obtenerFechaHoy());
+          const [esFeriado, setEsFeriado] = useState(false);
+          const [esDobleTurno, setEsDobleTurno] = useState(false);
+          const [esLluvia, setEsLluvia] = useState(false);
+
+          const [filtroInicio, setFiltroInicio] = useState(() => {
+            const d = new Date(); d.setDate(1); return d.toISOString().split('T')[0];
+          });
+          const [filtroFin, setFiltroFin] = useState(obtenerFechaHoy());
+          const [formAjustes, setFormAjustes] = useState(valoresActuales);
+
+          const mostrarNotificacion = (mensaje, tipo = "exito") => {
+            setNotificacion({ mensaje, tipo });
+            setTimeout(() => setNotificacion(null), 3000);
+          };
+
+          // Lógica de cálculo (reemplazando guiones para evitar problemas de zona horaria)
+          const infoDia = useMemo(() => {
+            const d = new Date(fecha.replace(/-/g, '\/'));
+            const diaSemana = d.getDay();
+            let tipo = 'Hábil', bono = 0;
+            if (diaSemana === 6) { tipo = 'Sábado'; bono = Number(valoresActuales.BONO_SABADO) || 0; }
+            else if (diaSemana === 0) { tipo = 'Domingo'; bono = Number(valoresActuales.BONO_DOMINGO) || 0; }
+            return { tipo, bono };
+          }, [fecha, valoresActuales]);
+
+          const calculoActual = useMemo(() => {
+            const total = (Number(valoresActuales.BASE) || 0) + infoDia.bono + 
+              (esFeriado ? (Number(valoresActuales.BONO_FERIADO) || 0) : 0) + 
+              (esDobleTurno ? (Number(valoresActuales.BONO_DOBLE_TURNO) || 0) : 0) + 
+              (esLluvia ? (Number(valoresActuales.BONO_LLUVIA) || 0) : 0);
+            return { total };
+          }, [infoDia, esFeriado, esDobleTurno, esLluvia, valoresActuales]);
+
+          const guardarJornada = () => {
+            if (jornadas.some(j => j.fecha === fecha)) return mostrarNotificacion("Ya hay un registro en esta fecha", "error");
+            const nuevaJornada = {
+              id: Date.now().toString(),
+              fecha, tipoDia: infoDia.tipo, esFeriado, esDobleTurno, esLluvia,
+              totalGenerado: calculoActual.total, timestamp: new Date().toISOString()
+            };
+            const nuevasJornadas = [...jornadas, nuevaJornada].sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+            setJornadas(nuevasJornadas);
+            mostrarNotificacion("Jornada guardada exitosamente");
+            setEsFeriado(false); setEsDobleTurno(false); setEsLluvia(false);
+          };
+
+          const eliminarJornada = (id) => {
+            setJornadas(jornadas.filter(j => j.id !== id));
+            mostrarNotificacion("Registro eliminado");
+          };
+
+          const guardarAjustes = () => {
+            setValoresActuales(formAjustes);
+            mostrarNotificacion("Nuevas tarifas guardadas");
+            setPestanaActiva('registro');
+          };
+
+          const exportarCSV = () => {
+            if (jornadasFiltradas.length === 0) return mostrarNotificacion("No hay datos", "error");
+            const cabeceras = ["Fecha", "Tipo de Dia", "Es Feriado", "Doble Turno", "Bono Lluvia", "Sueldo Base", "Bono Fin de Semana", "Total Feriado", "Total Doble Turno", "Total Lluvia", "Total Generado"];
+            
+            const filas = jornadasFiltradas.map(j => [
+              j.fecha, j.tipoDia, j.esFeriado?"Si":"No", j.esDobleTurno?"Si":"No", j.esLluvia?"Si":"No",
+              valoresActuales.BASE, 
+              (j.tipoDia === 'Sábado' ? valoresActuales.BONO_SABADO : j.tipoDia === 'Domingo' ? valoresActuales.BONO_DOMINGO : 0),
+              j.esFeriado ? valoresActuales.BONO_FERIADO : 0,
+              j.esDobleTurno ? valoresActuales.BONO_DOBLE_TURNO : 0,
+              j.esLluvia ? valoresActuales.BONO_LLUVIA : 0,
+              j.totalGenerado
+            ]);
+            
+            const contenido = [cabeceras.join(";"), ...filas.map(f => f.join(";"))].join("\n");
+            const blob = new Blob(["\uFEFF" + contenido], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement("a");
+            link.href = URL.createObjectURL(blob);
+            link.setAttribute("download", `Mis_Jornadas_${filtroInicio}_al_${filtroFin}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+          };
+
+          const jornadasFiltradas = useMemo(() => jornadas.filter(j => j.fecha >= filtroInicio && j.fecha <= filtroFin), [jornadas, filtroInicio, filtroFin]);
+          const estadisticas = useMemo(() => jornadasFiltradas.reduce((a, c) => ({ dias: a.dias + 1, total: a.total + c.totalGenerado }), { dias: 0, total: 0 }), [jornadasFiltradas]);
+
+          return (
+            <div className="min-h-screen pb-24">
+              <header className="bg-indigo-600 text-white p-4 sticky top-0 z-30 shadow-lg">
+                <div className="max-w-md mx-auto flex justify-between items-center">
+                  <div className="flex items-center gap-3">
+                    <i className="fa-solid fa-calendar-days text-xl"></i>
+                    <span className="font-bold text-lg tracking-tight">Control de Turnos</span>
+                  </div>
+                </div>
+              </header>
+
+              {notificacion && (
+                <div className={`fixed top-20 left-1/2 -translate-x-1/2 z-50 px-6 py-3 rounded-full shadow-2xl text-white font-medium flex items-center gap-2 ${notificacion.tipo === 'error' ? 'bg-red-500' : 'bg-emerald-500'}`}>
+                  <i className={`fa-solid ${notificacion.tipo === 'error' ? 'fa-circle-xmark' : 'fa-circle-check'}`}></i>
+                  {notificacion.mensaje}
+                </div>
+              )}
+
+              <main className="max-w-md mx-auto p-4 space-y-6">
+                
+                {/* --- PESTAÑA REGISTRO --- */}
+                {pestanaActiva === 'registro' && (
+                  <div>
+                    <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 space-y-4">
+                      <div className="flex items-center gap-2 text-indigo-600 mb-2">
+                        <i className="fa-regular fa-calendar text-lg"></i>
+                        <h2 className="font-bold">Nuevo Registro</h2>
+                      </div>
+
+                      <input type="date" value={fecha} onChange={e => setFecha(e.target.value)} className="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl text-lg font-medium focus:ring-2 ring-indigo-500 outline-none transition-all" />
+                      <div className="bg-indigo-50 p-3 rounded-xl text-indigo-700 text-sm font-semibold inline-flex items-center gap-2">
+                         Día detectado: {infoDia.tipo} 
+                         {infoDia.bono > 0 && <span className="bg-indigo-200 text-indigo-800 px-2 py-0.5 rounded text-xs">+ {formatearDinero(infoDia.bono)}</span>}
+                      </div>
+                      
+                      <div className="grid grid-cols-1 gap-3 pt-2">
+                        {[ 
+                          { id: 'feriado', label: 'Feriado', state: esFeriado, set: setEsFeriado, icon: "fa-sun", color: "text-orange-500", monto: valoresActuales.BONO_FERIADO },
+                          { id: 'doble', label: 'Doble Turno', state: esDobleTurno, set: setEsDobleTurno, icon: "fa-dollar-sign", color: "text-emerald-500", monto: valoresActuales.BONO_DOBLE_TURNO },
+                          { id: 'lluvia', label: 'Bono Lluvia', state: esLluvia, set: setEsLluvia, icon: "fa-cloud-showers-heavy", color: "text-blue-500", monto: valoresActuales.BONO_LLUVIA }
+                        ].map(item => (
+                          <label key={item.id} className={`flex items-center justify-between p-4 rounded-2xl border-2 transition-all cursor-pointer ${item.state ? 'border-indigo-500 bg-indigo-50/30' : 'border-slate-100 bg-white hover:border-slate-200'}`}>
+                            {/* AQUÍ ESTÁ LA CORRECCIÓN CRUCIAL: EL MOTOR INVISIBLE */}
+                            <input 
+                              type="checkbox" 
+                              className="hidden" 
+                              checked={item.state} 
+                              onChange={(e) => item.set(e.target.checked)} 
+                            />
+                            <div className="flex items-center gap-4">
+                              <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${item.state ? 'bg-white shadow-sm' : 'bg-slate-50'}`}>
+                                <i className={`fa-solid ${item.icon} ${item.color} text-lg`}></i>
+                              </div>
+                              <div>
+                                <span className="block font-bold text-slate-700">{item.label}</span>
+                                <span className="block text-xs text-slate-500 font-medium">+ {formatearDinero(item.monto)}</span>
+                              </div>
+                            </div>
+                            <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center ${item.state ? 'border-indigo-500 bg-indigo-500' : 'border-slate-300'}`}>
+                              {item.state && <i className="fa-solid fa-check text-white text-xs"></i>}
+                            </div>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="mt-6 bg-slate-900 rounded-[2.5rem] p-8 text-white shadow-xl relative overflow-hidden">
+                       <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-500/20 rounded-full -mr-16 -mt-16 blur-3xl"></div>
+                       <p className="text-slate-400 text-sm font-medium mb-1 uppercase tracking-widest">Total del día</p>
+                       <h3 className="text-4xl font-black mb-6">{formatearDinero(calculoActual.total)}</h3>
+                       
+                       <button onClick={guardarJornada} disabled={!fecha} className="w-full bg-indigo-500 hover:bg-indigo-400 py-4 rounded-2xl font-bold text-lg transition-all shadow-lg shadow-indigo-500/30 flex items-center justify-center gap-2 disabled:opacity-50 disabled:shadow-none">
+                         <i className="fa-solid fa-floppy-disk"></i> Guardar Jornada
+                       </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* --- PESTAÑA HISTORIAL --- */}
+                {pestanaActiva === 'historial' && (
+                  <div className="space-y-6">
+                     <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
+                        <div className="flex gap-2">
+                          <div className="flex-1">
+                            <label className="text-[10px] uppercase text-slate-400 font-bold ml-2">Desde</label>
+                            <input type="date" value={filtroInicio} onChange={e => setFiltroInicio(e.target.value)} className="w-full p-3 bg-slate-50 rounded-xl text-sm border-none focus:ring-2 ring-indigo-500 outline-none" />
+                          </div>
+                          <div className="flex-1">
+                            <label className="text-[10px] uppercase text-slate-400 font-bold ml-2">Hasta</label>
+                            <input type="date" value={filtroFin} onChange={e => setFiltroFin(e.target.value)} className="w-full p-3 bg-slate-50 rounded-xl text-sm border-none focus:ring-2 ring-indigo-500 outline-none" />
+                          </div>
+                        </div>
+                     </div>
+
+                     <div className="grid grid-cols-2 gap-4">
+                        <div className="bg-white p-5 rounded-3xl border border-slate-100 shadow-sm">
+                          <p className="text-slate-400 text-xs font-bold uppercase mb-1">Días</p>
+                          <p className="text-3xl font-black text-slate-800">{estadisticas.dias}</p>
+                        </div>
+                        <div className="bg-gradient-to-br from-indigo-600 to-indigo-800 p-5 rounded-3xl shadow-lg">
+                          <p className="text-indigo-200 text-xs font-bold uppercase mb-1">Monto Generado</p>
+                          <p className="text-xl sm:text-2xl font-black text-white">{formatearDinero(estadisticas.total)}</p>
+                        </div>
+                     </div>
+
+                     <button onClick={exportarCSV} className="w-full bg-slate-800 text-white font-medium py-3 rounded-xl flex justify-center items-center gap-2 shadow-md hover:bg-slate-700 transition-colors">
+                        <i className="fa-solid fa-download"></i> Exportar CSV a Excel
+                     </button>
+
+                     <div className="space-y-3">
+                        {jornadasFiltradas.length === 0 ? (
+                          <div className="text-center py-10 bg-white rounded-3xl border border-slate-100"><p className="text-slate-400 font-medium">No hay registros</p></div>
+                        ) : jornadasFiltradas.map(j => (
+                          <div key={j.id} className="bg-white p-5 rounded-2xl flex justify-between items-center border border-slate-100 shadow-sm">
+                            <div>
+                              <p className="font-bold text-slate-800">{j.fecha}</p>
+                              <div className="flex flex-wrap gap-1 mt-1 max-w-[180px]">
+                                <span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded font-bold uppercase">{j.tipoDia}</span>
+                                {j.esFeriado && <span className="text-[10px] bg-orange-50 text-orange-600 border border-orange-100 px-2 py-0.5 rounded font-bold uppercase">Feriado</span>}
+                                {j.esDobleTurno && <span className="text-[10px] bg-emerald-50 text-emerald-600 border border-emerald-100 px-2 py-0.5 rounded font-bold uppercase">Doble</span>}
+                                {j.esLluvia && <span className="text-[10px] bg-blue-50 text-blue-600 border border-blue-100 px-2 py-0.5 rounded font-bold uppercase">Lluvia</span>}
+                              </div>
+                            </div>
+                            <div className="flex flex-col items-end gap-2">
+                              <p className="font-black text-indigo-600 text-lg">{formatearDinero(j.totalGenerado)}</p>
+                              <button onClick={() => eliminarJornada(j.id)} className="text-slate-300 hover:text-red-500 bg-slate-50 p-2 rounded-lg transition-colors"><i className="fa-solid fa-trash-can"></i></button>
+                            </div>
+                          </div>
+                        ))}
+                     </div>
+                  </div>
+                )}
+
+                {/* --- PESTAÑA AJUSTES --- */}
+                {pestanaActiva === 'ajustes' && (
+                  <div className="space-y-6">
+                    <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100">
+                      <h2 className="font-bold text-slate-800 text-lg flex items-center gap-2 mb-6">
+                        <i className="fa-solid fa-gear text-indigo-500"></i> Tarifas Base
+                      </h2>
+
+                      <div className="space-y-4">
+                        {[
+                          { id: 'BASE', label: 'Sueldo Base' },
+                          { id: 'BONO_SABADO', label: 'Bono Sábado' },
+                          { id: 'BONO_DOMINGO', label: 'Bono Domingo' },
+                          { id: 'BONO_FERIADO', label: 'Bono Feriado' },
+                          { id: 'BONO_DOBLE_TURNO', label: 'Bono Doble Turno' },
+                          { id: 'BONO_LLUVIA', label: 'Bono por Lluvia' }
+                        ].map((campo) => (
+                          <div key={campo.id}>
+                            <label className="block text-xs f
